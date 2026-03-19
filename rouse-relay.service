@@ -1,0 +1,28 @@
+[Unit]
+Description=Rouse Relay Server
+Documentation=https://oraserrata.net/relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rouse-relay
+Restart=always
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# Environment — edit AUTH_TOKEN before enabling
+Environment=AUTH_TOKEN=YOUR_PASSWORD_HERE
+Environment=PORT=9876
+Environment=HOST=0.0.0.0
+
+# Logging goes to journald by default
+# View with: journalctl -u rouse-relay -f
+
+[Install]
+WantedBy=multi-user.target
