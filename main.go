@@ -27,6 +27,13 @@ import (
 	"strings"
 )
 
+// version is stamped at build time via:
+//
+//	go build -ldflags="-X main.version=1.0.0" .
+//
+// Defaults to "dev" for ad-hoc builds.
+var version = "dev"
+
 var (
 	authToken string
 	host      string
@@ -154,6 +161,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	sendJSON(w, 200, map[string]any{
 		"status":        "ok",
 		"service":       "rouse-relay",
+		"version":       version,
 		"auth_required": authToken != "",
 	})
 }
@@ -225,6 +233,8 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	log.Printf("Rouse Relay v%s starting up", version)
+
 	if authToken != "" {
 		log.Println("Authentication enabled (token configured)")
 	} else {
