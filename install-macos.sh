@@ -49,10 +49,14 @@ chmod +x "$INSTALL_DIR/$BINARY"
 # Create log directory
 mkdir -p "$LOG_DIR"
 
-# Install plist with user's AUTH_TOKEN
+# Install plist with user's AUTH_TOKEN.
+# Escape /, &, and \ in the token so passwords containing those characters
+# don't break the sed substitution. Without this, a password like "a/b" is
+# treated as a sed delimiter and corrupts the plist.
 echo "  Installing launch agent..."
 mkdir -p "$HOME/Library/LaunchAgents"
-sed "s/YOUR_PASSWORD_HERE/$AUTH_TOKEN/g" "$PLIST_SRC" > "$PLIST_DST"
+escaped_token=$(printf '%s\n' "$AUTH_TOKEN" | sed -e 's/[\\/&]/\\&/g')
+sed "s/YOUR_PASSWORD_HERE/$escaped_token/g" "$PLIST_SRC" > "$PLIST_DST"
 
 # Load and start
 echo "  Starting Rouse Relay..."
