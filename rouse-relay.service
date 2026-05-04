@@ -10,11 +10,25 @@ ExecStart=/usr/local/bin/rouse-relay
 Restart=always
 RestartSec=5
 
+# Drop root. The relay only needs to bind a UDP socket on port 9876 and
+# broadcast packets — neither of which requires privileges. DynamicUser
+# allocates a transient user/group at runtime so we don't have to create
+# one in /etc/passwd. Requires systemd 232+ (2016 and newer).
+DynamicUser=true
+
 # Security hardening
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
 
 # Environment — edit AUTH_TOKEN before enabling
 Environment=AUTH_TOKEN=YOUR_PASSWORD_HERE
