@@ -50,9 +50,12 @@ echo "  Installing binary to $INSTALL_DIR..."
 cp "$(dirname "$0")/$BINARY" "$INSTALL_DIR/$BINARY"
 chmod +x "$INSTALL_DIR/$BINARY"
 
-# Install service file with user's AUTH_TOKEN
+# Install service file with user's AUTH_TOKEN.
+# Escape /, &, and \ in the token so passwords containing those characters
+# don't break the sed substitution.
 echo "  Installing systemd service..."
-sed "s/YOUR_PASSWORD_HERE/$AUTH_TOKEN/g" "$SERVICE_SRC" > "$SERVICE_DST"
+escaped_token=$(printf '%s\n' "$AUTH_TOKEN" | sed -e 's/[\\/&]/\\&/g')
+sed "s/YOUR_PASSWORD_HERE/$escaped_token/g" "$SERVICE_SRC" > "$SERVICE_DST"
 
 # Enable and start
 echo "  Starting Rouse Relay..."
