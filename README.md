@@ -2,7 +2,11 @@
 
 A lightweight relay server for [Rouse](https://oraserrata.net) that receives authenticated HTTP requests and broadcasts Wake-on-LAN magic packets on the local network.
 
-## Quick Start (Docker)
+## Quick Start
+
+Pick one. They all do the same job — pick whichever matches your always-on device.
+
+### Docker (NAS, Raspberry Pi, any Linux box)
 
 ```bash
 docker run -d \
@@ -26,64 +30,73 @@ services:
       - AUTH_TOKEN=your-password-here
 ```
 
-## Quick Start (Native Binary)
+### Standalone download (Mac, Windows, Linux)
 
-Download the binary for your platform from the [releases page], then:
+Visit [oraserrata.net/relay](https://oraserrata.net/relay) and grab the zip for your platform. Each zip contains the relay binary plus a per-OS install script that registers the relay as a system service:
 
-```bash
-# macOS / Linux
-chmod +x rouse-relay
-AUTH_TOKEN=your-password-here ./rouse-relay
+- **macOS** — `install-macos.sh` registers a `LaunchAgent` that starts at login
+- **Linux** — `install-linux.sh` registers a `systemd` service running as `DynamicUser`
+- **Windows** — `install-windows.bat` registers a Scheduled Task that runs at boot (no NSSM required)
 
-# Windows (PowerShell)
-$env:AUTH_TOKEN = "your-password-here"
-.\rouse-relay.exe
-```
+Edit `AUTH_TOKEN` at the top of the install script before running it.
+
+### Mac running Rouse from the App Store
+
+Open Rouse → Settings → "Run Rouse as a Relay." The macOS app embeds the same relay protocol directly. No separate download.
 
 ## Configuration
 
 All configuration is via environment variables:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AUTH_TOKEN` | *(empty)* | Shared secret for authentication. Strongly recommended. |
-| `PORT` | `9876` | Port to listen on |
-| `HOST` | `0.0.0.0` | Host/IP to bind to |
+| Variable     | Default     | Description                                                |
+| ------------ | ----------- | ---------------------------------------------------------- |
+| `AUTH_TOKEN` | *(empty)*   | Shared secret for authentication. Strongly recommended.    |
+| `PORT`       | `9876`      | Port to listen on                                          |
+| `HOST`       | `0.0.0.0`   | Host/IP to bind to                                         |
 
 ## API
 
-### GET /health
+### `GET /health`
 
-Unauthenticated health check. Used by Rouse to show "Relay Up" / "Relay Down" status.
+Unauthenticated reachability probe. Used by Rouse to show "Relay Up" / "Relay Down" status. Always returns 200 if the relay is reachable.
 
 **Response:**
+
 ```json
-{"status": "ok", "service": "rouse-relay", "auth_required": true}
+{
+    "status": "ok",
+    "service": "rouse-relay",
+    "version": "1.0.0",
+    "auth_required": true
+}
 ```
 
-### GET /verify
+### `GET /verify`
 
-Authenticated connection test. Used by the "Test Connection" button during relay setup.
+Authenticated connection test. Used by the "Test Connection" button in Rouse on macOS, iPad, and iPhone to confirm the AUTH_TOKEN is correct (not just that the relay is reachable).
 
 **Headers:** `Authorization: Bearer {AUTH_TOKEN}`
 
-**Response (200):**
+**Response (200, good token):**
+
 ```json
-{"status": "ok", "auth": "valid"}
+{ "status": "ok", "auth": "valid" }
 ```
 
-**Response (401):**
+**Response (401, missing or wrong token):**
+
 ```json
-{"error": "Unauthorized"}
+{ "error": "Unauthorized" }
 ```
 
-### POST /wake
+### `POST /wake`
 
-Send a Wake-on-LAN magic packet. Authenticated.
+Send a Wake-on-LAN magic packet on the local network. Authenticated.
 
 **Headers:** `Authorization: Bearer {AUTH_TOKEN}`, `Content-Type: application/json`
 
 **Body:**
+
 ```json
 {
     "mac": "AA:BB:CC:DD:EE:FF",
@@ -99,8 +112,9 @@ Send a Wake-on-LAN magic packet. Authenticated.
 - `secure_on` (optional): SecureON password in MAC format (6 hex bytes separated by colons or dashes)
 
 **Response (200):**
+
 ```json
-{"success": true, "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "255.255.255.255", "port": 9}
+{ "success": true, "mac": "AA:BB:CC:DD:EE:FF", "broadcast": "255.255.255.255", "port": 9 }
 ```
 
 ## Building from Source
@@ -109,46 +123,26 @@ Requires Go 1.22+.
 
 ```bash
 # Build for current platform
-go build -ldflags="-s -w" -o rouse-relay .
+go build -ldflags="-s -w -X main.version=1.0.0" -o rouse-relay .
 
-# Cross-compile all platforms
+# Cross-compile every platform's raw binary
 make all
 
-# Build Docker image
+# Cross-compile AND assemble the GitHub Releases zips
+# (binary + install script + service file per platform)
+make release
+
+# Build the Docker image
 make docker
 ```
 
-The Makefile produces binaries for:
-- macOS (Apple Silicon + Intel)
-- Linux (amd64 + arm64)
-- Windows (amd64)
+`make release` produces these archives in `build/release/`:
 
-## Running as a System Service
-
-### macOS (launchd)
-
-```bash
-cp rouse-relay /usr/local/bin/
-# Then install the provided com.oraserrata.rouse-relay.plist to ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.oraserrata.rouse-relay.plist
-```
-
-### Linux (systemd)
-
-```bash
-cp rouse-relay /usr/local/bin/
-# Then install the provided rouse-relay.service to /etc/systemd/system/
-systemctl enable --now rouse-relay
-```
-
-### Windows
-
-```powershell
-# Use NSSM or WinSW to install as a Windows Service
-nssm install RouseRelay "C:\Program Files\Rouse\rouse-relay.exe"
-nssm set RouseRelay AppEnvironmentExtra AUTH_TOKEN=your-password-here
-nssm start RouseRelay
-```
+- `RouseRelay-macOS-arm64.zip` — Apple Silicon Mac
+- `RouseRelay-macOS-amd64.zip` — Intel Mac
+- `RouseRelay-linux-amd64.zip`
+- `RouseRelay-linux-arm64.zip`
+- `RouseRelay-windows-amd64.zip`
 
 ## License
 
