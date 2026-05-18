@@ -17,6 +17,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,6 +26,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // version is stamped at build time via:
@@ -39,6 +42,11 @@ var (
 	host      string
 	port      string
 )
+
+// authLimiter throttles repeated failed-auth attempts so a remote
+// attacker can't brute-force a weak token over an exposed relay.
+// See its definition below.
+var authLimiter = newRateLimiter()
 
 func init() {
 	authToken = os.Getenv("AUTH_TOKEN")
@@ -105,7 +113,11 @@ func sendMagicPacket(macStr, broadcast string, port int, secureOn string) error 
 		packet = append(packet, secureOnBytes...)
 	}
 
-	addr := fmt.Sprintf("%s:%d", broadcast, port)
+	// net.JoinHostPort handles IPv6 brackets correctly; the older
+	// fmt.Sprintf("%s:%d", …) form fails go vet on IPv6 inputs. WoL is
+	// fundamentally IPv4 in practice, but doing this the right way costs
+	// nothing.
+	addr := net.JoinHostPort(broadcast, strconv.Itoa(port))
 	conn, err := net.Dial("udp4", addr)
 	if err != nil {
 		// If direct dial fails, try broadcast via ListenPacket
@@ -136,15 +148,121 @@ func sendMagicPacket(macStr, broadcast string, port int, secureOn string) error 
 	return nil
 }
 
+// ----------------------------------------------------------------------
+// Failed-auth rate limiter
+//
+// Tracks failed-auth timestamps per remote IP. After 10 failures within a
+// rolling 60-second window, the IP is blocked from auth attempts (HTTP
+// 429) until enough of those failures age out. Only failed attempts are
+// recorded — successful auth never counts toward the limit, so legitimate
+// clients are unaffected.
+//
+// This is intentionally simple: in-memory, single-process, no eviction
+// beyond the window check. The map can grow if many distinct IPs hit the
+// relay, but for the typical Rouse deployment (small set of authorized
+// devices) that's a non-issue.
+// ----------------------------------------------------------------------
+
+const (
+	authFailureWindow = 60 * time.Second
+	authFailureLimit  = 10
+)
+
+type rateLimiter struct {
+	mu       sync.Mutex
+	attempts map[string][]time.Time
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{attempts: make(map[string][]time.Time)}
+}
+
+// allowed reports whether the given IP can attempt auth right now. Also
+// trims out-of-window entries so the map self-cleans.
+func (l *rateLimiter) allowed(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-authFailureWindow)
+	recent := l.attempts[ip][:0]
+	for _, t := range l.attempts[ip] {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) == 0 {
+		delete(l.attempts, ip)
+	} else {
+		l.attempts[ip] = recent
+	}
+	return len(recent) < authFailureLimit
+}
+
+// recordFailure appends a failed-auth timestamp for the given IP.
+func (l *rateLimiter) recordFailure(ip string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts[ip] = append(l.attempts[ip], time.Now())
+}
+
+// clientIP returns the client IP for rate-limiting purposes. We use the
+// remote address as-is and don't honor X-Forwarded-For — clients that
+// reach this server through a trusted reverse proxy can be configured to
+// add explicit handling later, but trusting forwarded headers by default
+// would let any caller spoof their identity to evade rate limiting.
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// constantTimeBearerEqual compares the incoming Authorization header
+// against the expected "Bearer <token>" string in constant time, so an
+// attacker can't use response-time differences to incrementally guess
+// the token one byte at a time. Length mismatches return false but the
+// comparison still runs to the end so the time taken is constant for a
+// given expected-token length.
+//
+// Mirrors RouseRelayService.swift's constantTimeEqual on the app side.
+func constantTimeBearerEqual(header, token string) bool {
+	expected := "Bearer " + token
+	a := []byte(header)
+	b := []byte(expected)
+	// subtle.ConstantTimeCompare returns 0 unconditionally for
+	// different-length inputs, so we have to length-match ourselves.
+	// Build a padded view of `a` matching `b`'s length and fold a
+	// length-mismatch flag into the result.
+	padded := make([]byte, len(b))
+	copy(padded, a)
+	lenMatch := subtle.ConstantTimeEq(int32(len(a)), int32(len(b)))
+	eq := subtle.ConstantTimeCompare(padded, b)
+	return lenMatch&eq == 1
+}
+
 // checkAuth validates the Authorization header. Returns true if authorized.
+// Failed attempts are recorded against the client IP; after 10 failures in
+// a 60-second window the IP is throttled with HTTP 429.
 func checkAuth(w http.ResponseWriter, r *http.Request) bool {
 	if authToken == "" {
 		return true
 	}
+
+	ip := clientIP(r)
+	if !authLimiter.allowed(ip) {
+		// Don't reveal whether the request would have authenticated.
+		// Just throttle and tell the caller to slow down.
+		w.Header().Set("Retry-After", strconv.Itoa(int(authFailureWindow.Seconds())))
+		sendJSON(w, 429, map[string]any{"error": "Too many failed auth attempts"})
+		return false
+	}
+
 	header := r.Header.Get("Authorization")
-	if header == "Bearer "+authToken {
+	if constantTimeBearerEqual(header, authToken) {
 		return true
 	}
+
+	authLimiter.recordFailure(ip)
 	sendJSON(w, 401, map[string]any{"error": "Unauthorized"})
 	return false
 }
@@ -232,14 +350,52 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// isPublicFacingHost reports whether the configured listen address is
+// reachable from anything other than localhost. 0.0.0.0 / :: / empty all
+// mean "listen on every interface", which on a typical home router or
+// VPS exposes the relay to the LAN at minimum and the public internet
+// if there's no firewall in front.
+func isPublicFacingHost(h string) bool {
+	switch h {
+	case "0.0.0.0", "::", "":
+		return true
+	default:
+		return false
+	}
+}
+
 func main() {
 	log.Printf("Rouse Relay v%s starting up", version)
 
-	if authToken != "" {
-		log.Println("Authentication enabled (token configured)")
+	// Authentication state warnings. The combination of "no token" + "any
+	// interface" is the dangerous one: anybody who can reach this server
+	// can wake any device on its network. Loud warning so an operator who
+	// accidentally exposes the relay sees it in the logs immediately.
+	if authToken == "" {
+		if isPublicFacingHost(host) {
+			log.Println("================================================================")
+			log.Println("CRITICAL: Relay is running unauthenticated AND listening on a")
+			log.Println("public-facing address. Any device that can reach this server")
+			log.Println("can wake your devices.")
+			log.Println("  - Set AUTH_TOKEN to require authentication, OR")
+			log.Println("  - Bind HOST=127.0.0.1 to accept only local-machine requests.")
+			log.Println("================================================================")
+		} else {
+			log.Println("Authentication disabled (no AUTH_TOKEN set). Accepting wake")
+			log.Printf("requests without a token. Bound to %s only.", host)
+		}
 	} else {
-		log.Println("WARNING: No AUTH_TOKEN set - relay is unauthenticated!")
-		log.Println("  Set AUTH_TOKEN environment variable for security.")
+		// Token configured. Surface a warning if it's obviously weak —
+		// the app's "Generate" button produces 32 random alphanumerics,
+		// so anything shorter is almost certainly user-typed and
+		// guessable.
+		if len(authToken) < 16 {
+			log.Println("WARNING: AUTH_TOKEN is shorter than 16 characters. Consider")
+			log.Println("  generating a longer token from the Rouse app (Settings →")
+			log.Println("  Relay Mode → Generate) to make brute-force impractical.")
+		} else {
+			log.Println("Authentication enabled (token configured)")
+		}
 	}
 
 	mux := http.NewServeMux()
