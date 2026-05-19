@@ -28,9 +28,24 @@ build/$(BINARY)-windows-amd64.exe:
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
 # --- Docker image -------------------------------------------------------
+#
+# `docker` is for local single-arch testing (whatever host arch you're on).
+# `docker-release` is the production push: multi-arch (linux/amd64 +
+# linux/arm64), version-stamped, tagged both VERSION and `latest`, pushed
+# straight to Docker Hub. Requires `docker buildx` and an authenticated
+# `docker login` to docker.io.
 
 docker:
-	docker build -t oraserrata/rouse-relay:latest .
+	docker build --build-arg VERSION=$(VERSION) -t oraserrata/rouse-relay:latest .
+
+docker-release:
+	docker buildx build \
+	    --platform linux/amd64,linux/arm64 \
+	    --build-arg VERSION=$(VERSION) \
+	    -t oraserrata/rouse-relay:$(VERSION) \
+	    -t oraserrata/rouse-relay:latest \
+	    --push \
+	    .
 
 # --- GitHub Releases zips -----------------------------------------------
 #

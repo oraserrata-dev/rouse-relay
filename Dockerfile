@@ -5,9 +5,16 @@
 # produces a fully static binary that runs on the minimal runtime stage
 # below without any glibc shim.
 FROM golang:1.23-alpine AS builder
+
+# Build-time argument for the version stamped into the binary via ldflags.
+# Pass with `docker build --build-arg VERSION=1.2.0` so `/health` reports
+# the right version. Defaults to "dev" to match the Go fallback for
+# unstamped builds, so a bare `docker build .` still works.
+ARG VERSION=dev
+
 WORKDIR /build
 COPY go.mod main.go ./
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o rouse-relay .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o rouse-relay .
 
 # --- Runtime stage -------------------------------------------------------
 FROM alpine:3.21
