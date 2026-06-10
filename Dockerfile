@@ -13,7 +13,11 @@ FROM golang:1.23-alpine AS builder
 ARG VERSION=dev
 
 WORKDIR /build
-COPY go.mod main.go ./
+# Copy every Go source, not just main.go: the broadcast socket option lives
+# in build-tagged socket_unix.go / socket_windows.go. The Linux build picks
+# socket_unix.go via its !windows tag; socket_windows.go is copied but
+# excluded by its build tag.
+COPY go.mod *.go ./
 RUN CGO_ENABLED=0 go build -ldflags="-s -w -X main.version=${VERSION}" -o rouse-relay .
 
 # --- Runtime stage -------------------------------------------------------
@@ -34,8 +38,10 @@ EXPOSE 9876
 
 # Container-level health probe. Hits the unauthenticated /health
 # endpoint every 30s; Docker reports the container as unhealthy after
-# three consecutive failures.
+# three consecutive failures. Honors the PORT env var (falling back to
+# 9876) so a remapped listen port doesn't make the container read as
+# unhealthy forever.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -q -O- http://127.0.0.1:9876/health >/dev/null || exit 1
+    CMD wget -q -O- "http://127.0.0.1:${PORT:-9876}/health" >/dev/null || exit 1
 
 ENTRYPOINT ["rouse-relay"]
