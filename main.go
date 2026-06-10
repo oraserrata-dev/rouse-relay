@@ -390,6 +390,12 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 		sendJSON(w, 400, map[string]any{"success": false, "error": "Missing 'mac' field"})
 		return
 	}
+	// Validate the MAC up front so a malformed one is a 400 (client error),
+	// not a 500 from the send path. sendMagicPacket re-parses; that's cheap.
+	if _, err := parseMac(req.MAC); err != nil {
+		sendJSON(w, 400, map[string]any{"success": false, "error": err.Error()})
+		return
+	}
 
 	if req.Broadcast == "" {
 		req.Broadcast = "255.255.255.255"
