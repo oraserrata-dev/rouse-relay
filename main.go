@@ -450,6 +450,17 @@ func isPublicFacingHost(h string) bool {
 func main() {
 	log.Printf("Rouse Relay v%s starting up", version)
 
+	// Refuse known placeholder tokens outright. These literals appear in
+	// the install scripts and the website's copy-paste snippets, so a relay
+	// running with one is effectively unauthenticated: the "secret" is
+	// public. They're also long enough to dodge the short-token warning
+	// below. Normalizing dashes to underscores catches both the
+	// YOUR_PASSWORD_HERE and your-password-here spellings.
+	switch strings.ToUpper(strings.ReplaceAll(authToken, "-", "_")) {
+	case "YOUR_PASSWORD_HERE", "CHANGE_ME", "CHANGEME", "PASSWORD", "TOKEN":
+		log.Fatal("AUTH_TOKEN is a placeholder value. Set a real token (use Generate in the Rouse app's relay settings) and restart.")
+	}
+
 	// Authentication state warnings. The combination of "no token" + "any
 	// interface" is the dangerous one: anybody who can reach this server
 	// can wake any device on its network. Loud warning so an operator who
