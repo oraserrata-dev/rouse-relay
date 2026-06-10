@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rouse Relay — Linux Installer
+# Rouse Relay - Linux Installer
 #
 # Usage:
 #   1. Edit AUTH_TOKEN below
@@ -17,9 +17,20 @@ SERVICE_SRC="$(dirname "$0")/$SERVICE_NAME.service"
 SERVICE_DST="/etc/systemd/system/$SERVICE_NAME.service"
 
 echo ""
-echo "  Rouse Relay — Linux Installer"
+echo "  Rouse Relay - Linux Installer"
 echo "  =============================="
 echo ""
+
+# Refuse to install with the placeholder (or an empty) token. Shipping the
+# literal "YOUR_PASSWORD_HERE" would deploy a relay anyone can drive, since
+# that value is public in this script.
+if [ "$AUTH_TOKEN" = "YOUR_PASSWORD_HERE" ] || [ -z "$AUTH_TOKEN" ]; then
+    echo "  ERROR: AUTH_TOKEN is still the placeholder."
+    echo "  Edit this script and set AUTH_TOKEN to the token from the Rouse app"
+    echo "  (Settings > Relay > Generate), then run the installer again."
+    echo "  Refusing to deploy an unauthenticated relay."
+    exit 1
+fi
 
 # Check for root
 if [ "$(id -u)" -ne 0 ]; then
@@ -56,6 +67,10 @@ chmod +x "$INSTALL_DIR/$BINARY"
 echo "  Installing systemd service..."
 escaped_token=$(printf '%s\n' "$AUTH_TOKEN" | sed -e 's/[\\/&]/\\&/g')
 sed "s/YOUR_PASSWORD_HERE/$escaped_token/g" "$SERVICE_SRC" > "$SERVICE_DST"
+# The unit file now holds the auth token in plaintext. systemd reads it as
+# root, so restrict it to root-only and keep it out of world-readable
+# /etc/systemd/system default perms (644).
+chmod 600 "$SERVICE_DST"
 
 # Enable and start
 echo "  Starting Rouse Relay..."

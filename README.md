@@ -4,7 +4,7 @@ A lightweight relay server for [Rouse](https://oraserrata.net) that receives aut
 
 ## Quick Start
 
-Pick one. They all do the same job — pick whichever matches your always-on device.
+Pick one. They all do the same job, so pick whichever matches your always-on device.
 
 ### Docker (NAS, Raspberry Pi, any Linux box)
 
@@ -34,9 +34,9 @@ services:
 
 Visit [oraserrata.net/relay](https://oraserrata.net/relay) and grab the zip for your platform. Each zip contains the relay binary plus a per-OS install script that registers the relay as a system service:
 
-- **macOS** — `install-macos.sh` registers a `LaunchAgent` that starts at login
-- **Linux** — `install-linux.sh` registers a `systemd` service running as `DynamicUser`
-- **Windows** — `install-windows.bat` registers a Scheduled Task that runs at boot (no NSSM required)
+- **macOS**: `install-macos.sh` registers a `LaunchAgent` that starts at login
+- **Linux**: `install-linux.sh` registers a `systemd` service running as `DynamicUser`
+- **Windows**: `install-windows.bat` registers a Scheduled Task that runs at boot (no NSSM required)
 
 Edit `AUTH_TOKEN` at the top of the install script before running it.
 
@@ -138,8 +138,8 @@ make docker
 
 `make release` produces these archives in `build/release/`:
 
-- `RouseRelay-macOS-arm64.zip` — Apple Silicon Mac
-- `RouseRelay-macOS-amd64.zip` — Intel Mac
+- `RouseRelay-macOS-arm64.zip`: Apple Silicon Mac
+- `RouseRelay-macOS-amd64.zip`: Intel Mac
 - `RouseRelay-linux-amd64.zip`
 - `RouseRelay-linux-arm64.zip`
 - `RouseRelay-windows-amd64.zip`

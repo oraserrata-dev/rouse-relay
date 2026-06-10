@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rouse Relay — macOS Installer
+# Rouse Relay - macOS Installer
 #
 # Usage:
 #   1. Edit AUTH_TOKEN below
@@ -18,9 +18,20 @@ PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_NAME"
 LOG_DIR="/usr/local/var/log"
 
 echo ""
-echo "  Rouse Relay — macOS Installer"
+echo "  Rouse Relay - macOS Installer"
 echo "  =============================="
 echo ""
+
+# Refuse to install with the placeholder (or an empty) token. Shipping the
+# literal "YOUR_PASSWORD_HERE" would deploy a relay anyone can drive, since
+# that value is public in this script.
+if [ "$AUTH_TOKEN" = "YOUR_PASSWORD_HERE" ] || [ -z "$AUTH_TOKEN" ]; then
+    echo "  ERROR: AUTH_TOKEN is still the placeholder."
+    echo "  Edit this script and set AUTH_TOKEN to the token from the Rouse app"
+    echo "  (Settings > Relay > Generate), then run the installer again."
+    echo "  Refusing to deploy an unauthenticated relay."
+    exit 1
+fi
 
 # Check binary exists
 if [ ! -f "$(dirname "$0")/$BINARY" ]; then
@@ -57,6 +68,9 @@ echo "  Installing launch agent..."
 mkdir -p "$HOME/Library/LaunchAgents"
 escaped_token=$(printf '%s\n' "$AUTH_TOKEN" | sed -e 's/[\\/&]/\\&/g')
 sed "s/YOUR_PASSWORD_HERE/$escaped_token/g" "$PLIST_SRC" > "$PLIST_DST"
+# The plist now holds the auth token in plaintext. Lock it down to the
+# owner so other local users can't read it.
+chmod 600 "$PLIST_DST"
 
 # Load and start
 echo "  Starting Rouse Relay..."

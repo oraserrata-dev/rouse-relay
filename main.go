@@ -17,6 +17,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -71,14 +73,16 @@ func parseMac(macStr string) ([]byte, error) {
 
 	parts := strings.Split(macStr, sep)
 	if len(parts) != 6 {
-		return nil, fmt.Errorf("invalid MAC address: %s", macStr)
+		// %q so a MAC containing newlines or control chars can't forge log
+		// lines when this error is later logged.
+		return nil, fmt.Errorf("invalid MAC address: %q", macStr)
 	}
 
 	mac := make([]byte, 6)
 	for i, p := range parts {
 		val, err := strconv.ParseUint(p, 16, 8)
 		if err != nil {
-			return nil, fmt.Errorf("invalid MAC address byte: %s", p)
+			return nil, fmt.Errorf("invalid MAC address byte: %q", p)
 		}
 		mac[i] = byte(val)
 	}
@@ -104,11 +108,13 @@ func sendMagicPacket(macStr, broadcast string, port int, secureOn string) error 
 		packet = append(packet, mac...)
 	}
 
-	// SecureON password (optional 6-byte append)
+	// SecureON password (optional 6-byte append). The error deliberately
+	// omits the value so the password never lands in logs or the HTTP
+	// response body.
 	if secureOn != "" {
 		secureOnBytes, err := parseMac(secureOn)
 		if err != nil {
-			return fmt.Errorf("invalid SecureON password: %s", secureOn)
+			return fmt.Errorf("invalid SecureON password")
 		}
 		packet = append(packet, secureOnBytes...)
 	}
@@ -118,33 +124,54 @@ func sendMagicPacket(macStr, broadcast string, port int, secureOn string) error 
 	// fundamentally IPv4 in practice, but doing this the right way costs
 	// nothing.
 	addr := net.JoinHostPort(broadcast, strconv.Itoa(port))
-	conn, err := net.Dial("udp4", addr)
+	dst, err := net.ResolveUDPAddr("udp4", addr)
 	if err != nil {
-		// If direct dial fails, try broadcast via ListenPacket
-		conn2, err2 := net.ListenPacket("udp4", ":0")
-		if err2 != nil {
-			return fmt.Errorf("failed to open socket: %w", err2)
-		}
-		defer conn2.Close()
+		return fmt.Errorf("failed to resolve address: %w", err)
+	}
 
-		dst, err2 := net.ResolveUDPAddr("udp4", addr)
-		if err2 != nil {
-			return fmt.Errorf("failed to resolve address: %w", err2)
-		}
-		_, err2 = conn2.WriteTo(packet, dst)
-		if err2 != nil {
-			return fmt.Errorf("failed to send packet: %w", err2)
-		}
-		log.Printf("Magic packet sent to %s via %s:%d", macStr, broadcast, port)
-		return nil
+	// Open the socket with SO_BROADCAST set via the platform-specific
+	// setBroadcastOpt. The previous code relied on a plain net.Dial to the
+	// broadcast address, which fails with EACCES on Linux (the Docker
+	// deployment) precisely because SO_BROADCAST wasn't set, so broadcast
+	// wakes could silently never leave the host.
+	lc := net.ListenConfig{
+		Control: func(network, address string, c syscall.RawConn) error {
+			var optErr error
+			if err := c.Control(func(fd uintptr) { optErr = setBroadcastOpt(fd) }); err != nil {
+				return err
+			}
+			return optErr
+		},
+	}
+	conn, err := lc.ListenPacket(context.Background(), "udp4", ":0")
+	if err != nil {
+		return fmt.Errorf("failed to open socket: %w", err)
 	}
 	defer conn.Close()
 
-	_, err = conn.Write(packet)
-	if err != nil {
-		return fmt.Errorf("failed to send packet: %w", err)
+	// Send a short burst. UDP is best-effort and a single magic packet can
+	// be dropped on a busy or wireless segment; the duplicates are harmless
+	// (the NIC wakes on the first it sees) and materially improve
+	// reliability. Mirrors the 3-packet burst the apps send. Success means
+	// at least one of the burst left the host.
+	const burst = 3
+	var sentOK bool
+	var lastErr error
+	for i := 0; i < burst; i++ {
+		if _, err := conn.WriteTo(packet, dst); err != nil {
+			lastErr = err
+		} else {
+			sentOK = true
+		}
+		if i < burst-1 {
+			time.Sleep(120 * time.Millisecond)
+		}
 	}
-	log.Printf("Magic packet sent to %s via %s:%d", macStr, broadcast, port)
+	if !sentOK {
+		return fmt.Errorf("failed to send packet: %w", lastErr)
+	}
+	// %q so a hostile MAC/broadcast string can't inject forged log lines.
+	log.Printf("Magic packet sent to %q via %q:%d", macStr, broadcast, port)
 	return nil
 }
 
@@ -154,7 +181,7 @@ func sendMagicPacket(macStr, broadcast string, port int, secureOn string) error 
 // Tracks failed-auth timestamps per remote IP. After 10 failures within a
 // rolling 60-second window, the IP is blocked from auth attempts (HTTP
 // 429) until enough of those failures age out. Only failed attempts are
-// recorded — successful auth never counts toward the limit, so legitimate
+// recorded; successful auth never counts toward the limit, so legitimate
 // clients are unaffected.
 //
 // This is intentionally simple: in-memory, single-process, no eviction
@@ -204,8 +231,42 @@ func (l *rateLimiter) recordFailure(ip string) {
 	l.attempts[ip] = append(l.attempts[ip], time.Now())
 }
 
+// sweep drops every fully-aged-out IP. allowed() only cleans an IP when that
+// same IP is checked again, so an attacker rotating through many source IPs
+// could otherwise leave stale entries that never get revisited. The janitor
+// bounds the map regardless of traffic pattern.
+func (l *rateLimiter) sweep() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-authFailureWindow)
+	for ip, times := range l.attempts {
+		recent := times[:0]
+		for _, t := range times {
+			if t.After(cutoff) {
+				recent = append(recent, t)
+			}
+		}
+		if len(recent) == 0 {
+			delete(l.attempts, ip)
+		} else {
+			l.attempts[ip] = recent
+		}
+	}
+}
+
+// startJanitor runs sweep() on a ticker for the life of the process.
+func (l *rateLimiter) startJanitor() {
+	go func() {
+		ticker := time.NewTicker(authFailureWindow)
+		defer ticker.Stop()
+		for range ticker.C {
+			l.sweep()
+		}
+	}()
+}
+
 // clientIP returns the client IP for rate-limiting purposes. We use the
-// remote address as-is and don't honor X-Forwarded-For — clients that
+// remote address as-is and don't honor X-Forwarded-For. Clients that
 // reach this server through a trusted reverse proxy can be configured to
 // add explicit handling later, but trusting forwarded headers by default
 // would let any caller spoof their identity to evade rate limiting.
@@ -314,6 +375,11 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap the request body. A wake payload is a few hundred bytes; 16 KB is
+	// generous and stops a client from streaming an unbounded body into the
+	// JSON decoder.
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+
 	var req wakeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendJSON(w, 400, map[string]any{"success": false, "error": "Invalid JSON"})
@@ -328,8 +394,19 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 	if req.Broadcast == "" {
 		req.Broadcast = "255.255.255.255"
 	}
+	// Only accept a literal IP address as the broadcast target. Rejecting
+	// hostnames keeps the relay from being coerced into a DNS lookup or
+	// resolving an attacker-controlled name to an unintended destination.
+	if net.ParseIP(req.Broadcast) == nil {
+		sendJSON(w, 400, map[string]any{"success": false, "error": "Invalid broadcast address"})
+		return
+	}
 	if req.Port == 0 {
 		req.Port = 9
+	}
+	if req.Port < 1 || req.Port > 65535 {
+		sendJSON(w, 400, map[string]any{"success": false, "error": "Port must be between 1 and 65535"})
+		return
 	}
 
 	err := sendMagicPacket(req.MAC, req.Broadcast, req.Port, req.SecureOn)
@@ -385,7 +462,7 @@ func main() {
 			log.Printf("requests without a token. Bound to %s only.", host)
 		}
 	} else {
-		// Token configured. Surface a warning if it's obviously weak —
+		// Token configured. Surface a warning if it's obviously weak, since
 		// the app's "Generate" button produces 32 random alphanumerics,
 		// so anything shorter is almost certainly user-typed and
 		// guessable.
@@ -398,18 +475,33 @@ func main() {
 		}
 	}
 
+	// Reap stale rate-limiter entries in the background.
+	authLimiter.startJanitor()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/verify", handleVerify)
 	mux.HandleFunc("/wake", handleWake)
 
-	listenAddr := host + ":" + port
+	listenAddr := net.JoinHostPort(host, port)
 	log.Printf("Rouse Relay listening on %s", listenAddr)
 	log.Printf("  Health:  GET  http://%s/health", listenAddr)
 	log.Printf("  Verify:  GET  http://%s/verify  (requires auth)", listenAddr)
 	log.Printf("  Wake:    POST http://%s/wake    (requires auth)", listenAddr)
 
-	if err := http.ListenAndServe(listenAddr, mux); err != nil {
+	// Explicit timeouts so a slow or idle client can't tie up a connection
+	// indefinitely (Slowloris). The default http.Server has none of these,
+	// which on a public-facing relay is a real exhaustion vector.
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16, // 64 KB
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
