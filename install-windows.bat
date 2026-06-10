@@ -40,11 +40,19 @@ if not exist "%RELAY_EXE%" (
     exit /b 1
 )
 
-REM Auth token edited
+REM Auth token edited. Refuse the placeholder AND an empty value, either
+REM would deploy a relay anyone on the network can drive.
 if "%AUTH_TOKEN%"=="YOUR_PASSWORD_HERE" (
     echo  ERROR: AUTH_TOKEN is still the placeholder value.
     echo  Open this script in a text editor, change AUTH_TOKEN at the top,
     echo  then run it again as Administrator.
+    pause
+    exit /b 1
+)
+if "%AUTH_TOKEN%"=="" (
+    echo  ERROR: AUTH_TOKEN is empty.
+    echo  Set it to the token from the Rouse app, then run this script
+    echo  again as Administrator.
     pause
     exit /b 1
 )
@@ -69,6 +77,15 @@ echo  Writing launcher: %LAUNCHER%
     echo set PORT=%PORT%
     echo "%RELAY_EXE%"
 ) > "%LAUNCHER%"
+
+REM The launcher holds the auth token in plaintext. Strip inherited ACLs and
+REM grant only SYSTEM (which the Scheduled Task runs as) and Administrators,
+REM so a non-admin local user can't read the token off disk.
+icacls "%LAUNCHER%" /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" >nul
+if %errorlevel% neq 0 (
+    echo  WARNING: Could not restrict permissions on %LAUNCHER%.
+    echo  The file contains your AUTH_TOKEN; consider restricting it manually.
+)
 
 REM --- Create the Scheduled Task ------------------------------------------
 

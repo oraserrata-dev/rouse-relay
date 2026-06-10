@@ -2,6 +2,12 @@ VERSION ?= 1.0.0
 BINARY  := rouse-relay
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
+# Every Go source file, listed as a prerequisite of each binary so editing
+# any .go file (or go.mod) forces a rebuild. Without this, a stale binary
+# left in build/ satisfies the target and `make release` silently zips old
+# code.
+SOURCES := $(wildcard *.go) go.mod
+
 .PHONY: all clean docker release
 
 # --- Cross-compiled raw binaries ----------------------------------------
@@ -12,19 +18,19 @@ all: build/$(BINARY)-darwin-arm64 \
      build/$(BINARY)-linux-arm64 \
      build/$(BINARY)-windows-amd64.exe
 
-build/$(BINARY)-darwin-arm64:
+build/$(BINARY)-darwin-arm64: $(SOURCES)
 	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
-build/$(BINARY)-darwin-amd64:
+build/$(BINARY)-darwin-amd64: $(SOURCES)
 	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
-build/$(BINARY)-linux-amd64:
+build/$(BINARY)-linux-amd64: $(SOURCES)
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
-build/$(BINARY)-linux-arm64:
+build/$(BINARY)-linux-arm64: $(SOURCES)
 	GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
-build/$(BINARY)-windows-amd64.exe:
+build/$(BINARY)-windows-amd64.exe: $(SOURCES)
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $@ .
 
 # --- Docker image -------------------------------------------------------
