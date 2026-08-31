@@ -12,7 +12,7 @@ Pick one. They all do the same job, so pick whichever matches your always-on dev
 docker run -d \
     --name rouse-relay \
     --network host \
-    --restart unless-stopped \
+    --restart always \
     -e AUTH_TOKEN=your-password-here \
     oraserrata/rouse-relay:latest
 ```
@@ -24,7 +24,7 @@ services:
   rouse-relay:
     image: oraserrata/rouse-relay:latest
     container_name: rouse-relay
-    restart: unless-stopped
+    restart: always
     network_mode: host
     environment:
       - AUTH_TOKEN=your-password-here
