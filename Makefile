@@ -1,4 +1,4 @@
-VERSION ?= 1.0.0
+VERSION ?= 1.3.1
 BINARY  := rouse-relay
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
