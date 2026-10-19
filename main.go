@@ -403,9 +403,19 @@ func handleWake(w http.ResponseWriter, r *http.Request) {
 	// Only accept a literal IP address as the broadcast target. Rejecting
 	// hostnames keeps the relay from being coerced into a DNS lookup or
 	// resolving an attacker-controlled name to an unintended destination.
-	if net.ParseIP(req.Broadcast) == nil {
+	// It must be IPv4: the send path dials udp4, so an IPv6 literal would
+	// pass here and then fail as a 500.
+	if ip := net.ParseIP(req.Broadcast); ip == nil || ip.To4() == nil {
 		sendJSON(w, 400, map[string]any{"success": false, "error": "Invalid broadcast address"})
 		return
+	}
+	// Same for SecureON: a malformed password is a client error. The message
+	// matches sendMagicPacket's and never includes the value.
+	if req.SecureOn != "" {
+		if _, err := parseMac(req.SecureOn); err != nil {
+			sendJSON(w, 400, map[string]any{"success": false, "error": "invalid SecureON password"})
+			return
+		}
 	}
 	if req.Port == 0 {
 		req.Port = 9
