@@ -44,6 +44,37 @@ Edit `AUTH_TOKEN` at the top of the install script before running it.
 
 Open Rouse → Settings → "Run Rouse as a Relay." The macOS app embeds the same relay protocol directly. No separate download.
 
+## Waking from away: Tailscale subnet routing
+
+To wake a computer when you are away from home, your iPhone, iPad or Mac has to reach the relay. If you use [Tailscale](https://tailscale.com), we recommend making the relay host a Tailscale **subnet router**. The relay host then carries your whole home network over Tailscale, so:
+
+- Only the relay host needs Tailscale. The computers you wake do not.
+- After a computer wakes, you can connect to it (Remote Desktop, SSH, file sharing) at its normal home address, through the relay host.
+
+A sleeping computer cannot keep its own Tailscale connection up anyway, so it cannot rely on that connection to be reached.
+
+On a Linux relay host (Raspberry Pi, NAS, Docker host), with Tailscale already installed:
+
+```bash
+# 1. Let the host forward traffic for the home network
+echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-tailscale.conf
+sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
+
+# 2. Advertise your home subnet (replace with yours)
+sudo tailscale set --advertise-routes=192.168.1.0/24
+```
+
+3. In the Tailscale admin console, open the relay host under **Machines**, choose **Edit route settings**, and approve the route.
+4. On the device you wake from, make sure it uses subnet routes. The Tailscale apps for iPhone, iPad and Mac do this by default. A Linux client needs `sudo tailscale set --accept-routes`.
+
+Then, in Rouse, enter the relay's Tailscale address (the `100.x.y.z` one) as its VPN address. Nothing changes for the devices you wake.
+
+Good to know:
+
+- The relay host must stay on and awake. The computers it wakes can sleep.
+- If the network you are visiting uses the same address range as your home (for example, both are `192.168.1.x`), your home addresses can clash with local ones. Giving your home network a less common range, such as `192.168.47.0/24`, avoids this.
+- Tailscale's guide covers other systems and options: [Subnet routers](https://tailscale.com/kb/1019/subnets).
+
 ## Configuration
 
 All configuration is via environment variables:
