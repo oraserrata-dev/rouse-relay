@@ -46,33 +46,42 @@ Open Rouse → Settings → "Run Rouse as a Relay." The macOS app embeds the sam
 
 ## Waking from away: Tailscale subnet routing
 
-To wake a computer when you are away from home, your iPhone, iPad or Mac has to reach the relay. If you use [Tailscale](https://tailscale.com), we recommend making the relay host a Tailscale **subnet router**. The relay host then carries your whole home network over Tailscale, so:
+To wake a computer when you are away from home, your iPhone, iPad or Mac has to reach the relay. If you use [Tailscale](https://tailscale.com), install it on the relay host and on each device you wake from, then enter the relay's Tailscale address (the `100.x.y.z` one) in Rouse as its VPN address. That is enough to wake.
 
-- Only the relay host needs Tailscale. The computers you wake do not.
-- After a computer wakes, you can connect to it (Remote Desktop, SSH, file sharing) at its normal home address, through the relay host.
+We also recommend making the relay host a Tailscale **subnet router**. It then carries your whole home network over Tailscale, so after a computer wakes you can connect to it (Remote Desktop, SSH, file sharing) at its normal home address, without installing Tailscale on it. A Mac with Apple silicon is different: a magic packet only wakes it partway, with the network on and the display off, for a minute or two. Then it goes back to sleep, so a remote session may drop.
 
-A sleeping computer cannot keep its own Tailscale connection up anyway, so it cannot rely on that connection to be reached.
+You can't count on reaching a sleeping computer over its own Tailscale connection. It is usually offline while it sleeps. A Mac may answer for less than a minute during a brief background wake and then sleep again, and that answer does not mean it has fully woken. The relay host is the one that stays awake, so it is the dependable way in.
 
-On a Linux relay host (Raspberry Pi, NAS, Docker host), with Tailscale already installed:
+### On a Raspberry Pi or another Linux computer
+
+With Tailscale installed as a normal package:
 
 ```bash
 # 1. Let the host forward traffic for the home network
-echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-tailscale.conf
+echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
 sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
 
 # 2. Advertise your home subnet (replace with yours)
 sudo tailscale set --advertise-routes=192.168.1.0/24
 ```
 
-3. In the Tailscale admin console, open the relay host under **Machines**, choose **Edit route settings**, and approve the route.
-4. On the device you wake from, make sure it uses subnet routes. The Tailscale apps for iPhone, iPad and Mac do this by default. A Linux client needs `sudo tailscale set --accept-routes`.
+### On a Synology NAS
 
-Then, in Rouse, enter the relay's Tailscale address (the `100.x.y.z` one) as its VPN address. Nothing changes for the devices you wake.
+Tailscale's package from Package Center routes the subnet itself, so skip step 1. Add your home subnet in the Tailscale package's web page (Settings, Subnet router, then Advertise routes), or over SSH with `sudo tailscale set --advertise-routes=192.168.1.0/24`. If you turned on TUN for Tailscale and the DSM firewall is on, add a firewall rule that allows `100.64.0.0/10`. Through a Synology subnet route, home computers may not answer ping, but connections such as Remote Desktop, SSH and file sharing still work. Tailscale's guide: [Synology](https://tailscale.com/kb/1131/synology).
+
+### Then, on either
+
+3. In the Tailscale admin console, open the **Machines** page and find the relay host (it shows a Subnets badge). Open its menu (the three dots at the end of its row), choose **Edit subnet routes**, tick the route you advertised, and select **Save**.
+4. From the same menu, choose **Disable Key Expiry**. Otherwise the relay's Tailscale sign-in expires (after 180 days by default), and you cannot reach it from away until it signs in again, which usually means doing it at home.
+5. On the devices you wake from, make sure they use subnet routes. The Tailscale apps for iPhone, iPad and Mac do this by default. A Linux client needs `sudo tailscale set --accept-routes`.
+
+Rouse keeps using the relay's `100.x.y.z` address. Nothing changes for the devices you wake.
 
 Good to know:
 
 - The relay host must stay on and awake. The computers it wakes can sleep.
-- If the network you are visiting uses the same address range as your home (for example, both are `192.168.1.x`), your home addresses can clash with local ones. Giving your home network a less common range, such as `192.168.47.0/24`, avoids this.
+- If the network you are visiting uses the same address range as your home (for example, both are `192.168.1.x`), you may not be able to reach home computers at their home addresses while you are there. Waking still works, because Rouse falls back to the relay's `100.x.y.z` address. Moving your home network to a less common range, such as `192.168.47.0/24`, makes a clash unlikely. If you do, advertise and approve the new range in Tailscale, and in Rouse update the relay's local address and any broadcast address you set to the old range.
 - Tailscale's guide covers other systems and options: [Subnet routers](https://tailscale.com/kb/1019/subnets).
 
 ## Configuration
